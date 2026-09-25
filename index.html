@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Атлас МОЖД</title>
+<meta name="description" content="Интерактивная карта построек Московской окружной железной дороги 1903–1908 гг.: сохранившиеся, утраченные, объекты культурного наследия, листы альбомов чертежей.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Oranienbaum&family=PT+Sans:ital,wght@0,400;0,700;1,400&family=PT+Mono&display=swap">
+<link rel="stylesheet" href="assets/vendor/leaflet.css">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div id="map" aria-label="Карта"></div>
+
+<header class="brand">
+  <h1>Атлас МОЖД</h1>
+  <p>Московская окружная железная дорога · 1903–1908 · арх. А.&nbsp;Н.&nbsp;Померанцев</p>
+  <div class="search">
+    <label for="q" class="sr">Поиск объекта</label>
+    <input id="q" type="search" placeholder="Найти: станция, здание, мост…" autocomplete="off">
+    <ul id="results" hidden></ul>
+  </div>
+</header>
+
+<button id="panel-toggle" class="panel-toggle" aria-expanded="false" aria-controls="panel">Слои и легенда</button>
+
+<aside id="panel" class="panel" aria-label="Слои и легенда">
+  <section>
+    <h2>Подложка</h2>
+    <div id="bases" class="radio-list"></div>
+  </section>
+  <section>
+    <h2>Исторические карты</h2>
+    <div id="overlays"></div>
+  </section>
+  <section>
+    <h2>Объекты</h2>
+    <div id="legend"></div>
+    <div class="filters">
+      <label for="f-station">Станция</label>
+      <select id="f-station"><option value="">все станции</option></select>
+      <label for="f-kind">Тип</label>
+      <select id="f-kind"><option value="">все типы</option></select>
+    </div>
+    <p class="counter" id="counter"></p>
+    <details id="unlocated" class="unlocated"><summary>Без точной привязки</summary><ul></ul></details>
+  </section>
+  <section class="about">
+    <p>Данные: перечень ОКН Москвы (по спискам Викигида), OpenStreetMap, альбомы исполнительных чертежей МОЖД 1903–1908 гг. (т. I–II, Wikimedia Commons), «Альбом сооружений Московской окружной ж. д.» 1908 г. (ГПИБ), фото Главархива Москвы и авторов Wikimedia Commons, сведения «Архнадзора» и краеведов об утратах. Положение части утраченных построек приблизительное — такие точки обведены пунктиром. Сборка: сентябрь 2026.</p>
+  </section>
+</aside>
+
+<article id="card" class="card" hidden aria-live="polite">
+  <button class="card-close" id="card-close" aria-label="Закрыть карточку">×</button>
+  <div id="card-body"></div>
+</article>
+
+<div id="lightbox" class="lightbox" hidden>
+  <button class="lb-close" id="lb-close" aria-label="Закрыть">×</button>
+  <figure><img id="lb-img" alt=""><figcaption id="lb-cap"></figcaption></figure>
+</div>
+
+<script src="assets/vendor/leaflet.js"></script>
+<script src="config.js"></script>
+<script src="data/objects.js"></script>
+<script src="data/ring.js"></script>
+<script src="data/overlays.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>
