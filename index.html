@@ -53,9 +53,20 @@
 </aside>
 
 <article id="card" class="card" hidden aria-live="polite">
-  <button class="card-close" id="card-close" aria-label="Закрыть карточку">×</button>
+  <div class="card-top">
+    <div id="card-nav" class="card-nav" hidden>
+      <button type="button" id="nav-prev" class="nav-btn" aria-label="Предыдущий объект по кругу"><span aria-hidden="true">‹</span></button>
+      <span id="nav-pos" class="nav-pos"></span>
+      <button type="button" id="nav-next" class="nav-btn" aria-label="Следующий объект по кругу"><span aria-hidden="true">›</span></button>
+    </div>
+    <button type="button" class="card-close" id="card-close" aria-label="Закрыть карточку">×</button>
+  </div>
   <div id="card-body"></div>
 </article>
+
+<button type="button" id="tour-start" class="tour-start" title="Открыть ближайший объект и идти по кольцу стрелками">
+  <span class="long">Обход по кругу</span><span class="short">По кругу</span> <span aria-hidden="true">→</span>
+</button>
 
 <div id="lightbox" class="lightbox" hidden>
   <button class="lb-close" id="lb-close" aria-label="Закрыть">×</button>

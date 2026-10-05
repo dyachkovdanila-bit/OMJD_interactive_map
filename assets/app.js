@@ -58,24 +58,50 @@
   map.createPane('stplan'); map.getPane('stplan').style.zIndex = 360;
   const ovBox = document.getElementById('overlays');
   let lastGroup = null;
+  // Каждый слой сначала показывается одним лёгким изображением низкого разрешения (o.lo);
+  // фрагменты высокого разрешения подгружаются только при приближении (zoom ≥ o.hiZoom) и только
+  // те, что попадают в окно карты. Пока фрагмент грузится, под ним остаётся видно превью.
   OV.forEach((o) => {
-    const grp = L.layerGroup();
     const pane = o.id.startsWith('st_') ? 'stplan' : 'hist';
-    const imgs = (o.chunks || []).map(c => L.imageOverlay(c.url, c.bounds, {pane, opacity: o.opacity ?? 0.75, interactive: false}));
-    imgs.forEach(i => grp.addLayer(i));
+    let alpha = o.opacity ?? 0.75, on = false;
+    const lo = o.lo ? L.imageOverlay(o.lo.url, o.lo.bounds, {pane, opacity: alpha, interactive: false}) : null;
+    const hi = (o.chunks || []).map(c => ({c, bounds: L.latLngBounds(c.bounds), layer: null, loaded: false}));
+    const hiZoom = o.hiZoom ?? 13;
+    function refresh() {
+      if (!on) return;
+      const z = map.getZoom(), view = map.getBounds().pad(0.25);
+      const need = (z >= hiZoom || !lo) ? hi.filter(h => view.intersects(h.bounds)) : [];
+      need.forEach(h => {
+        if (h.layer) return;
+        h.layer = L.imageOverlay(h.c.url, h.c.bounds, {pane, opacity: 0, interactive: false});
+        h.layer.on('load', () => { h.loaded = true; refresh(); });
+        h.layer.addTo(map);
+      });
+      const showHi = z >= hiZoom || !lo;
+      hi.forEach(h => { if (h.layer) h.layer.setOpacity(showHi && h.loaded ? alpha : 0); });
+      const pending = need.some(h => !h.loaded);
+      if (lo) lo.setOpacity(showHi && need.length && !pending ? 0 : alpha);
+    }
+    o._refresh = refresh;
+    function setOn(v) {
+      on = v;
+      if (v) { if (lo) lo.addTo(map); refresh(); }
+      else { if (lo) map.removeLayer(lo); hi.forEach(h => { if (h.layer) h.layer.setOpacity(0); }); }
+    }
+    map.on('moveend zoomend', refresh);
     if (o.group && o.group !== lastGroup) { const g = document.createElement('div'); g.className = 'grp'; g.textContent = o.group; ovBox.appendChild(g); lastGroup = o.group; }
     const wrap = document.createElement('div'); wrap.className = 'ov';
-    const op = Math.round((o.opacity ?? 0.75) * 100);
+    const op = Math.round(alpha * 100);
     wrap.innerHTML = `<label><input type="checkbox"> ${esc(o.title)}</label>` +
       (o.note ? `<p class="meta">${esc(o.note)}</p>` : '') +
       `<input type="range" min="0" max="100" value="${op}" aria-label="Непрозрачность: ${escAttr(o.title)}" disabled>`;
     const cb = wrap.querySelector('input[type=checkbox]'), rg = wrap.querySelector('input[type=range]');
     cb.addEventListener('change', () => {
-      if (cb.checked) { grp.addTo(map); rg.disabled = false; if (o.fit && !o._silent) map.fitBounds(o.fit, {maxZoom: 16}); }
-      else { map.removeLayer(grp); rg.disabled = true; }
+      if (cb.checked) { setOn(true); rg.disabled = false; if (o.fit && !o._silent) map.fitBounds(o.fit, {maxZoom: 16}); }
+      else { setOn(false); rg.disabled = true; }
       o._silent = false;
     });
-    rg.addEventListener('input', () => imgs.forEach(i => i.setOpacity(rg.value / 100)));
+    rg.addEventListener('input', () => { alpha = rg.value / 100; if (lo) lo.setOpacity(alpha); refresh(); });
     o._cb = cb;
     ovBox.appendChild(wrap);
     if (o.default) { o._silent = true; cb.checked = true; cb.dispatchEvent(new Event('change')); }
@@ -133,6 +159,7 @@
   fStation.addEventListener('change', () => applyFilters(true));
   fKind.addEventListener('change', () => applyFilters());
 
+  let onFiltersChanged = null;
   function applyFilters(fit) {
     let n = 0; const b = [];
     markers.forEach(({m, o}) => {
@@ -141,6 +168,7 @@
     });
     document.getElementById('counter').textContent = `На карте: ${n} из ${markers.size} · всего в каталоге: ${D.objects.length}`;
     if (fit && b.length) map.fitBounds(b, {padding: [60, 60], maxZoom: 17});
+    if (onFiltersChanged) onFiltersChanged();
   }
   applyFilters();
 
@@ -181,37 +209,146 @@
 
   // ---------- card ----------
   const card = document.getElementById('card'), body = document.getElementById('card-body');
-  let selected = null;
+  const nav = document.getElementById('card-nav'), navPos = document.getElementById('nav-pos');
+  const tourBtn = document.getElementById('tour-start');
+  let selected = null, current = null;   // current = {type: 'obj'|'st', id}
   document.getElementById('card-close').addEventListener('click', closeCard);
-  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !lb.hidden) closeLb(); else if (e.key === 'Escape' && !card.hidden) closeCard(); });
+  document.getElementById('nav-prev').addEventListener('click', () => step(-1));
+  document.getElementById('nav-next').addEventListener('click', () => step(1));
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !lb.hidden) closeLb();
+    else if (e.key === 'Escape' && !card.hidden) closeCard();
+    else if ((e.key === 'ArrowRight' || e.key === 'ArrowLeft') && !card.hidden && lb.hidden && !/^(INPUT|SELECT|TEXTAREA)$/.test((e.target.tagName || ''))) {
+      e.preventDefault(); step(e.key === 'ArrowRight' ? 1 : -1);
+    }
+  });
+
+  // ---------- обход по кругу ----------
+  // Объекты идут по ходу кольца (по часовой стрелке от севера, поле ord — км вдоль оси кольца),
+  // учитываются только видимые на карте точки (с текущими фильтрами). Станции — отдельный круг.
+  function objSeq() {
+    const seq = [];
+    markers.forEach(({m, o}) => { if (map.hasLayer(m)) seq.push(o); });
+    return seq.sort((a, b) => (a.ord ?? 0) - (b.ord ?? 0) || a.name.localeCompare(b.name, 'ru'));
+  }
+  const stSeq = STATIONS.slice().sort((a, b) => (a.ord ?? 0) - (b.ord ?? 0));
+  function step(dir) {
+    if (!current) return;
+    if (current.type === 'st') {
+      const i = stSeq.findIndex(s => s.id === current.id);
+      openStation(stSeq[(i + dir + stSeq.length) % stSeq.length].id, true, true);
+      return;
+    }
+    const seq = objSeq(); if (!seq.length) return;
+    let i = seq.findIndex(o => o.id === current.id);
+    if (i < 0) {   // текущий объект скрыт фильтром или без координат — ближайший по кольцу
+      const cur = byId.get(current.id), ord = cur && cur.ord != null ? cur.ord : 0;
+      i = seq.findIndex(o => (o.ord ?? 0) > ord); if (i < 0) i = 0;
+      openCard(seq[dir > 0 ? i : (i - 1 + seq.length) % seq.length].id, true, true); return;
+    }
+    openCard(seq[(i + dir + seq.length) % seq.length].id, true, true);
+  }
+  function updateNav() {
+    if (!current) { nav.hidden = true; return; }
+    nav.hidden = false;
+    if (current.type === 'st') {
+      const i = stSeq.findIndex(s => s.id === current.id);
+      const p = stSeq[(i - 1 + stSeq.length) % stSeq.length], n = stSeq[(i + 1) % stSeq.length];
+      navPos.textContent = `станция ${i + 1} из ${stSeq.length}`;
+      setNavTitles(p.name, n.name); return;
+    }
+    const seq = objSeq(), i = seq.findIndex(o => o.id === current.id);
+    if (i < 0) { navPos.textContent = seq.length ? `вне обхода · ${seq.length} на карте` : 'нет точек на карте'; setNavTitles('', ''); return; }
+    navPos.textContent = `${i + 1} из ${seq.length}`;
+    setNavTitles(seq[(i - 1 + seq.length) % seq.length].name, seq[(i + 1) % seq.length].name);
+  }
+  onFiltersChanged = () => { if (current) updateNav(); };
+  function setNavTitles(p, n) {
+    document.getElementById('nav-prev').title = p ? 'Предыдущий: ' + p + ' (←)' : 'Предыдущий (←)';
+    document.getElementById('nav-next').title = n ? 'Следующий: ' + n + ' (→)' : 'Следующий (→)';
+  }
+  tourBtn.addEventListener('click', () => {
+    const seq = objSeq(); if (!seq.length) return;
+    const c = map.getCenter();
+    let best = seq[0], bd = Infinity;
+    seq.forEach(o => { const d = c.distanceTo([o.lat, o.lon]); if (d < bd) { bd = d; best = o; } });
+    openCard(best.id, true, true);
+  });
+  // свайп по карточке на телефоне
+  let tx = null, ty = null;
+  card.addEventListener('touchstart', e => { const t = e.touches[0]; tx = t.clientX; ty = t.clientY; }, {passive: true});
+  card.addEventListener('touchend', e => {
+    if (tx == null) return; const t = e.changedTouches[0], dx = t.clientX - tx, dy = t.clientY - ty; tx = null;
+    if (Math.abs(dx) > 70 && Math.abs(dy) < 45) step(dx < 0 ? 1 : -1);
+  }, {passive: true});
 
   function showCard(html, hash) {
     body.innerHTML = html;
-    body.querySelectorAll('[data-full]').forEach(btn => btn.addEventListener('click', () => openLb(btn.dataset.full, btn.dataset.cap)));
+    body.querySelectorAll('[data-full]').forEach(btn => btn.addEventListener('click', () => openLb(btn.dataset.full, btn.dataset.cap, btn.querySelector('img'))));
     body.querySelectorAll('a[href^="#"]').forEach(a => a.addEventListener('click', e => { e.preventDefault(); route(a.getAttribute('href').slice(1), true); }));
-    card.hidden = false; card.scrollTop = 0;
+    body.querySelectorAll('img.prog').forEach(img => progIO.observe(img));
+    card.hidden = false; card.scrollTop = 0; tourBtn.hidden = true;
     if (window.innerWidth > 760) panel.style.visibility = 'hidden';
+    updateNav();
     try { history.replaceState(null, '', '#' + hash); } catch (e) {}
   }
   function unselect() { if (selected) { const s = markers.get(selected); if (s && s.m.getElement()) s.m.getElement().classList.remove('sel'); selected = null; } }
-  function openCard(id, fly) {
+  function openCard(id, fly, keepZoom) {
     const o = byId.get(id); if (!o) return;
     const rec = markers.get(id);
     unselect(); selected = id; if (rec && rec.m.getElement()) rec.m.getElement().classList.add('sel');
+    current = {type: 'obj', id};
     showCard(renderCard(o), id);
-    if (fly && rec) map.flyTo([o.lat, o.lon], Math.max(map.getZoom(), 16), {duration: .6});
+    if (fly && rec) {
+      if (keepZoom && map.getZoom() >= 14) map.panTo(offsetForCard([o.lat, o.lon]), {duration: .5});
+      else map.flyTo(offsetForCard([o.lat, o.lon], 16), Math.max(map.getZoom(), 16), {duration: .6});
+    }
   }
-  function openStation(id, fly) {
+  function openStation(id, fly, keepZoom) {
     const s = stById.get(id); if (!s) return;
-    unselect(); showCard(renderStation(s), id);
-    if (fly) map.flyTo([s.lat, s.lon], Math.max(map.getZoom(), 15), {duration: .6});
+    unselect(); current = {type: 'st', id}; showCard(renderStation(s), id);
+    if (fly) {
+      if (keepZoom && map.getZoom() >= 13) map.panTo(offsetForCard([s.lat, s.lon]), {duration: .5});
+      else map.flyTo(offsetForCard([s.lat, s.lon], 15), Math.max(map.getZoom(), 15), {duration: .6});
+    }
+  }
+  // точка смещается так, чтобы её не закрывала карточка (справа на компьютере, снизу на телефоне)
+  function offsetForCard(ll, z) {
+    z = z ?? map.getZoom();
+    const p = map.project(ll, z), mobile = window.innerWidth <= 760;
+    const dx = mobile ? 0 : Math.min(card.offsetWidth || 440, window.innerWidth * 0.5) / 2;
+    const dy = mobile ? Math.min(window.innerHeight * 0.78, card.offsetHeight || 0) / 2 : 0;
+    return map.unproject(p.add([dx, dy]), z);
   }
   function route(id, fly) { if (byId.has(id)) openCard(id, fly); else if (stById.has(id)) openStation(id, fly); }
   function closeCard() {
-    card.hidden = true; panel.style.visibility = '';
+    card.hidden = true; panel.style.visibility = ''; current = null; nav.hidden = true; tourBtn.hidden = false;
     unselect();
     try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
   }
+
+  // ---------- прогрессивная загрузка картинок ----------
+  // В карточке сначала стоит крошечное превью (размыто), полноразмерная картинка подгружается,
+  // когда превью попадает в зону видимости, и подменяет его после загрузки.
+  const DPR = window.devicePixelRatio || 1;
+  const CARD_W = DPR > 1.5 ? 960 : 500;
+  const progIO = 'IntersectionObserver' in window ? new IntersectionObserver(entries => {
+    entries.forEach(en => { if (en.isIntersecting) { progIO.unobserve(en.target); upgrade(en.target); } });
+  }, {root: card, rootMargin: '400px 0px'}) : {observe: upgrade, unobserve() {}};
+  function upgrade(img) {
+    const hi = img.dataset.hi; if (!hi || img.dataset.done) return;
+    img.dataset.done = '1';
+    const pre = new Image(); pre.decoding = 'async';
+    pre.onload = () => { img.src = hi; img.classList.add('sharp'); };
+    pre.onerror = () => img.classList.add('sharp');
+    pre.src = hi;
+  }
+  function progImg(lo, hi, alt) {
+    return lo && lo !== hi
+      ? `<img class="prog" src="${escAttr(lo)}" data-hi="${escAttr(hi)}" alt="${escAttr(alt)}" decoding="async">`
+      : `<img loading="lazy" src="${escAttr(hi)}" alt="${escAttr(alt)}" decoding="async">`;
+  }
+  function commonsThumb(m, w) { return (m.w && w >= m.w) ? m.o : m.t.replace('{w}', w); }
 
   function chips(o) {
     const st = STATUS[o.status] || STATUS.unknown;
@@ -228,7 +365,7 @@
       const A = D.albums[a.a]; if (!A) return '';
       const pages = a.pages > 1 ? `стр. ${a.page}–${a.page + a.pages - 1}` : `стр. ${a.page}`;
       const cap = `${A.short}${a.sheet ? ', л. ' + a.sheet : ''}, ${pages} PDF`;
-      return `<figure class="shot"><button type="button" data-full="${pageThumb(A, a.page, 1920)}" data-cap="${escAttr(a.title + ' — ' + cap)}"><img loading="lazy" src="${pageThumb(A, a.page, 960)}" alt="${escAttr(a.title)}"></button>` +
+      return `<figure class="shot"><button type="button" data-full="${pageThumb(A, a.page, 1920)}" data-cap="${escAttr(a.title + ' — ' + cap)}">${progImg(pageThumb(A, a.page, 120), pageThumb(A, a.page, CARD_W), a.title)}</button>` +
         `<figcaption><b>${esc(a.title)}</b><br><span class="sheet-ref">${esc(cap)}</span> · <a href="${pageLink(A, a.page)}" target="_blank" rel="noopener">открыть лист</a></figcaption></figure>`;
     }).join('') + `</div>`;
   }
@@ -298,22 +435,35 @@
   function shots(list, emptyText) {
     if (!list || !list.length) return emptyText ? `<p class="empty">${emptyText}</p>` : '';
     return `<div class="shots">` + list.map(p => {
-      let src, full, cap, credit = '';
-      if (p.a) { const A = D.albums[p.a]; src = pageThumb(A, p.page, 960); full = pageThumb(A, p.page, 1920); cap = p.cap || A.short; credit = `${A.short}, стр. ${p.page} PDF · <a href="${pageLink(A, p.page)}" target="_blank" rel="noopener">источник</a>`; }
-      else if (p.src) { src = p.src; full = p.full || p.src; cap = p.cap || ''; credit = p.credit || ''; }
+      let lo, src, full, cap, credit = '';
+      if (p.a) { const A = D.albums[p.a]; lo = pageThumb(A, p.page, 120); src = pageThumb(A, p.page, CARD_W); full = pageThumb(A, p.page, 1920); cap = p.cap || A.short; credit = `${A.short}, стр. ${p.page} PDF · <a href="${pageLink(A, p.page)}" target="_blank" rel="noopener">источник</a>`; }
+      else if (p.src) { lo = p.lo; src = p.src; full = p.full || p.src; cap = p.cap || ''; credit = p.credit || ''; }
       else {
         const m = (D.media || {})[p.file]; if (!m) return '';
-        src = m.thumb; full = m.full || m.thumb; cap = p.cap || m.desc || '';
+        lo = commonsThumb(m, 120); src = commonsThumb(m, CARD_W); full = commonsThumb(m, 1920); cap = p.cap || m.desc || '';
         credit = [m.date, m.author, m.lic].filter(Boolean).map(esc).join(' · ') + ` · <a href="https://commons.wikimedia.org/wiki/File:${encodeURIComponent(p.file.replace(/ /g, '_'))}" target="_blank" rel="noopener">Commons</a>`;
       }
-      return `<figure class="shot"><button type="button" data-full="${escAttr(full)}" data-cap="${escAttr(cap)}"><img loading="lazy" src="${escAttr(src)}" alt="${escAttr(cap)}"></button><figcaption>${cap ? '<b>' + esc(cap) + '</b><br>' : ''}${credit}</figcaption></figure>`;
+      return `<figure class="shot"><button type="button" data-full="${escAttr(full)}" data-cap="${escAttr(cap)}">${progImg(lo, src, cap)}</button><figcaption>${cap ? '<b>' + esc(cap) + '</b><br>' : ''}${credit}</figcaption></figure>`;
     }).join('') + `</div>`;
   }
 
   // ---------- lightbox ----------
   const lb = document.getElementById('lightbox'), lbImg = document.getElementById('lb-img'), lbCap = document.getElementById('lb-cap');
-  function openLb(src, cap) { lbImg.src = src; lbImg.alt = cap || ''; lbCap.textContent = cap || ''; lb.hidden = false; }
-  function closeLb() { lb.hidden = true; lbImg.removeAttribute('src'); }
+  // Сначала показывается картинка, уже загруженная в карточку, затем подменяется полной версией.
+  let lbToken = 0;
+  function openLb(full, cap, thumbEl) {
+    const tok = ++lbToken;
+    const mid = thumbEl && thumbEl.currentSrc ? thumbEl.currentSrc : '';
+    lbImg.alt = cap || ''; lbCap.textContent = cap || ''; lb.hidden = false;
+    if (mid && mid !== full) {
+      lbImg.src = mid; lb.classList.add('loading');
+      const pre = new Image(); pre.decoding = 'async';
+      pre.onload = () => { if (tok === lbToken) { lbImg.src = full; lb.classList.remove('loading'); } };
+      pre.onerror = () => { if (tok === lbToken) lb.classList.remove('loading'); };
+      pre.src = full;
+    } else { lb.classList.remove('loading'); lbImg.src = full; }
+  }
+  function closeLb() { lbToken++; lb.hidden = true; lb.classList.remove('loading'); lbImg.removeAttribute('src'); }
   document.getElementById('lb-close').addEventListener('click', closeLb);
   lb.addEventListener('click', e => { if (e.target === lb) closeLb(); });
 
