@@ -108,6 +108,155 @@
   });
   if (!OV.length) ovBox.innerHTML = '<p class="note">Слои появятся после привязки карт.</p>';
 
+  // ---------- 15 минут пешком ----------
+  // Время пешком до ближайшей постройки МОЖД по сети пешеходных путей OpenStreetMap (5 км/ч).
+  // Градиент — растр времени; «дерево» — кратчайшие пути от построек, толщина ветки показывает,
+  // сколько улиц к ней сходится. Данные (≈2 МБ) грузятся только при включении слоя.
+  map.createPane('isofield'); map.getPane('isofield').style.zIndex = 370;
+  map.createPane('isotree'); map.getPane('isotree').style.zIndex = 385;
+  map.getPane('isofield').style.pointerEvents = 'none'; map.getPane('isotree').style.pointerEvents = 'none';
+  const ISO = (() => {
+    const box = document.getElementById('iso-box');
+    const TIME_COL = ['#B86A00', '#1F8C80', '#2475AA', '#2E559F', '#34327A'];
+    const TIME_OP = [0.95, 0.9, 0.8, 0.66, 0.5];
+    const BASE_W = [0.7, 1.05, 1.6, 2.4, 3.4, 4.8];
+    const MIN_Z = [15, 14, 13, 12, 0, 0];
+    const HL = '#D9480F';
+    let stats = null, treeData = null, statsP = null, treeP = null;
+    let on = false, showField = true, showTree = true, alpha = 0.85;
+    let field = null, groups = null, hlLayer = null, selId = null;
+    const renderer = L.canvas({pane: 'isotree', padding: 0.3});
+    const loadScript = src => new Promise((ok, bad) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = () => bad(new Error(src)); document.head.appendChild(s); });
+    const loadStats = () => statsP || (statsP = loadScript('data/iso_stats.js').then(() => (stats = window.MOZD_ISO)));
+    const loadTree = () => treeP || (treeP = loadScript('data/iso_tree.js').then(() => (treeData = window.MOZD_ISO_TREE)));
+    function dec(arr, from) {
+      const pts = []; let a = 0, b = 0;
+      for (let i = from; i < arr.length; i += 2) { a += arr[i]; b += arr[i + 1]; pts.push([55 + a / 1e5, 37 + b / 1e5]); }
+      return pts;
+    }
+    function buildField() {
+      const o = stats.ov;
+      const lo = L.imageOverlay(o.lo.url, o.lo.bounds, {pane: 'isofield', opacity: alpha, interactive: false});
+      const hi = o.chunks.map(c => ({c, bounds: L.latLngBounds(c.bounds), layer: null, loaded: false}));
+      let active = false;
+      function refresh() {
+        if (!active) return;
+        const z = map.getZoom(), view = map.getBounds().pad(0.25);
+        const need = z >= o.hiZoom ? hi.filter(h => view.intersects(h.bounds)) : [];
+        need.forEach(h => {
+          if (h.layer) return;
+          h.layer = L.imageOverlay(h.c.url, h.c.bounds, {pane: 'isofield', opacity: 0, interactive: false});
+          h.layer.on('load', () => { h.loaded = true; refresh(); }); h.layer.addTo(map);
+        });
+        const showHi = z >= o.hiZoom;
+        hi.forEach(h => { if (h.layer) h.layer.setOpacity(showHi && h.loaded ? alpha : 0); });
+        lo.setOpacity(showHi && need.length && !need.some(h => !h.loaded) ? 0 : alpha);
+      }
+      map.on('moveend zoomend', refresh);
+      return {
+        set(v) { active = v; if (v) { lo.addTo(map); refresh(); } else { map.removeLayer(lo); hi.forEach(h => { if (h.layer) h.layer.setOpacity(0); }); } },
+        refresh
+      };
+    }
+    function buildTree() {
+      const buckets = {};
+      treeData.chains.forEach(c => { const k = c[1] * 10 + c[2]; (buckets[k] = buckets[k] || []).push(dec(c, 3)); });
+      return Object.entries(buckets).map(([k, lines]) => {
+        const fc = Math.floor(k / 10), tc = k % 10;
+        return {fc, layer: L.polyline(lines, {renderer, interactive: false, color: TIME_COL[tc], opacity: TIME_OP[tc], weight: BASE_W[fc], lineCap: 'round', lineJoin: 'round', smoothFactor: 0.6})};
+      }).sort((a, b) => a.fc - b.fc);
+    }
+    const zf = () => Math.max(0.4, Math.min(1.9, Math.pow(2, (map.getZoom() - 15) * 0.45)));
+    function syncTree() {
+      if (!groups) return;
+      const z = map.getZoom(), f = zf();
+      groups.forEach(g => {
+        const vis = on && showTree && z >= MIN_Z[g.fc];
+        if (vis) { g.layer.setStyle({weight: BASE_W[g.fc] * f}); if (!map.hasLayer(g.layer)) g.layer.addTo(map); }
+        else if (map.hasLayer(g.layer)) map.removeLayer(g.layer);
+      });
+      if (hlLayer) hlLayer.eachLayer(l => l.setStyle && l.options.className === 'iso-hl-tree' && l.setStyle({weight: 2.2 * f + 0.6}));
+    }
+    map.on('zoomend', syncTree);
+    function highlight() {
+      if (hlLayer) { map.removeLayer(hlLayer); hlLayer = null; }
+      if (!on || !selId || !stats) return;
+      // карточка станции подсвечивает весь её участок, карточка постройки — зону самой постройки
+      const zone = stats.zones[selId], st = zone || stats.objects[selId];
+      if (!st || !st.iso) return;
+      hlLayer = L.layerGroup();
+      st.iso.forEach(poly => L.polygon(poly.map(r => dec(r, 0)), {pane: 'isotree', renderer, interactive: false, color: HL, weight: 2, dashArray: '6 5', fill: false}).addTo(hlLayer));
+      if (treeData && showTree && !zone) {
+        const idx = treeData.src.indexOf(selId);
+        const lines = treeData.chains.filter(c => c[0] === idx).map(c => dec(c, 3));
+        if (lines.length) L.polyline(lines, {renderer, interactive: false, color: HL, opacity: 0.95, weight: 2.2 * zf() + 0.6, lineCap: 'round', className: 'iso-hl-tree'}).addTo(hlLayer);
+      }
+      hlLayer.addTo(map);
+    }
+    async function setOn(v) {
+      on = v; sub.hidden = !v;
+      if (v) {
+        status.textContent = 'загрузка…';
+        try {
+          await loadStats();
+          if (!field) field = buildField();
+          field.set(on && showField);
+          if (showTree) { await loadTree(); if (!groups) groups = buildTree(); }
+          status.textContent = `зона ${fmt(stats.params.union_ha / 100, 1)} км² · OSM на ${stats.params.osm}`;
+        } catch (e) { status.textContent = 'данные слоя не найдены'; }
+      } else if (field) field.set(false);
+      syncTree(); highlight();
+    }
+    box.innerHTML = `<label class="iso-main"><input type="checkbox" id="iso-on"> Зона пешей доступности от построек</label>
+      <p class="meta" id="iso-status">время до ближайшей постройки по пешеходной сети OSM, 5 км/ч</p>
+      <div id="iso-sub" hidden>
+        <div class="iso-legend" aria-hidden="true"><span class="bar"></span><span class="ticks"><i>0</i><i>5</i><i>10</i><i>15 мин</i></span></div>
+        <label><input type="checkbox" id="iso-field" checked> градиент времени</label>
+        <label><input type="checkbox" id="iso-tree" checked> дерево кратчайших путей</label>
+        <input type="range" id="iso-alpha" min="0" max="100" value="${Math.round(alpha * 100)}" aria-label="Непрозрачность градиента">
+        <p class="meta">Толщина ветки — сколько улиц к ней сходится; тонкие ветки появляются при приближении. Открытая карточка подсвечивает зону своей постройки.</p>
+      </div>`;
+    const sub = box.querySelector('#iso-sub'), status = box.querySelector('#iso-status');
+    box.querySelector('#iso-on').addEventListener('change', e => setOn(e.target.checked));
+    box.querySelector('#iso-field').addEventListener('change', e => { showField = e.target.checked; if (field) field.set(on && showField); });
+    box.querySelector('#iso-tree').addEventListener('change', async e => { showTree = e.target.checked; if (on && showTree) { await loadTree(); if (!groups) groups = buildTree(); } syncTree(); highlight(); });
+    box.querySelector('#iso-alpha').addEventListener('input', e => { alpha = e.target.value / 100; if (field) field.refresh(); });
+    function turnOn() { const cb = box.querySelector('#iso-on'); if (!cb.checked) { cb.checked = true; return setOn(true); } return Promise.resolve(); }
+
+    const fmt = (v, d) => Number(v).toLocaleString('ru-RU', {maximumFractionDigits: d ?? 0, minimumFractionDigits: d ?? 0});
+    function figs(s) {
+      const cell = (n, t) => `<div><b>${n}</b><span>${t}</span></div>`;
+      let h = `<div class="iso-figs">` +
+        cell(fmt(s.a / 100, 2), 'км² в 15 минутах') +
+        cell(fmt(s.b), `зданий, из них жилых ${fmt(s.r)}`) +
+        (s.gfa >= 1000 ? cell('≈' + fmt(s.gfa / 1000, 1), 'млн м² жилого фонда*') : cell(s.gfa ? '≈' + fmt(Math.round(s.gfa / 10) * 10) : '—', 'тыс. м² жилого фонда*')) +
+        cell(fmt(s.s), 'остановок автобуса и трамвая') +
+        cell(fmt(s.v), 'кафе, магазинов, школ, поликлиник') +
+        cell(fmt(s.g) + ' %', 'зоны — парки, лес, газоны') + `</div>`;
+      const rails = [['Метро', s.m], ['МЦК', s.k], ['Ж.-д. станции', s.d]].filter(([, l]) => l && l.length);
+      if (rails.length) h += `<p class="iso-rail">${rails.map(([t, l]) => `<b>${t}:</b> ${l.map(esc).join(', ')}`).join('<br>')}</p>`;
+      return h;
+    }
+    function fillCard(el) {
+      const sec = el.querySelector('[data-iso]'); if (!sec) return;
+      const id = sec.dataset.iso, kind = sec.dataset.isoKind;
+      loadStats().then(() => {
+        const s = kind === 'zone' ? stats.zones[id] : stats.objects[id];
+        if (!s) { sec.remove(); return; }
+        sec.innerHTML = `<h3>${kind === 'zone' ? '15 минут от построек станции' : '15 минут пешком'}</h3>` + figs(s) +
+          `<p class="note">* по площади застройки и этажности из OSM; оценка. Сеть пешеходных путей OSM на ${stats.params.osm}, 5 км/ч, закрытые территории и частные проходы исключены.</p>` +
+          (on ? '' : `<p><button type="button" class="btn-inline" data-iso-show>Показать зону на карте</button></p>`);
+        const b = sec.querySelector('[data-iso-show]');
+        if (b) b.addEventListener('click', () => { turnOn().then(() => { b.parentNode.remove(); }); });
+      }).catch(() => sec.remove());
+    }
+    return {
+      section: (id, kind) => `<section class="iso-sec" data-iso="${escAttr(id)}" data-iso-kind="${kind || 'obj'}"><h3>${kind === 'zone' ? '15 минут от построек станции' : '15 минут пешком'}</h3><p class="note">загрузка…</p></section>`,
+      fillCard,
+      select(id) { selId = id; highlight(); }
+    };
+  })();
+
   // ---------- ring line ----------
   map.createPane('ring'); map.getPane('ring').style.zIndex = 420;
   if (RING.length) L.polyline(RING, {pane: 'ring', color: getCss('--ring'), weight: 2, opacity: .65, interactive: false}).addTo(map);
@@ -287,6 +436,7 @@
     body.querySelectorAll('[data-full]').forEach(btn => btn.addEventListener('click', () => openLb(btn.dataset.full, btn.dataset.cap, btn.querySelector('img'))));
     body.querySelectorAll('a[href^="#"]').forEach(a => a.addEventListener('click', e => { e.preventDefault(); route(a.getAttribute('href').slice(1), true); }));
     body.querySelectorAll('img.prog').forEach(img => progIO.observe(img));
+    ISO.fillCard(body);
     card.hidden = false; card.scrollTop = 0; tourBtn.hidden = true;
     if (window.innerWidth > 760) panel.style.visibility = 'hidden';
     updateNav();
@@ -299,6 +449,7 @@
     unselect(); selected = id; if (rec && rec.m.getElement()) rec.m.getElement().classList.add('sel');
     current = {type: 'obj', id};
     showCard(renderCard(o), id);
+    ISO.select(id);
     if (fly && rec) {
       if (keepZoom && map.getZoom() >= 14) map.panTo(offsetForCard([o.lat, o.lon]), {duration: .5});
       else map.flyTo(offsetForCard([o.lat, o.lon], 16), Math.max(map.getZoom(), 16), {duration: .6});
@@ -307,6 +458,7 @@
   function openStation(id, fly, keepZoom) {
     const s = stById.get(id); if (!s) return;
     unselect(); current = {type: 'st', id}; showCard(renderStation(s), id);
+    ISO.select(id);
     if (fly) {
       if (keepZoom && map.getZoom() >= 13) map.panTo(offsetForCard([s.lat, s.lon]), {duration: .5});
       else map.flyTo(offsetForCard([s.lat, s.lon], 15), Math.max(map.getZoom(), 15), {duration: .6});
@@ -323,7 +475,7 @@
   function route(id, fly) { if (byId.has(id)) openCard(id, fly); else if (stById.has(id)) openStation(id, fly); }
   function closeCard() {
     card.hidden = true; panel.style.visibility = ''; current = null; nav.hidden = true; tourBtn.hidden = false;
-    unselect();
+    unselect(); ISO.select(null);
     try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
   }
 
@@ -393,6 +545,7 @@
       h += shots(o.photos, 'Современных фото пока нет — добавьте свои снимки с выезда.');
     }
     h += `<h3>Исторические фото</h3>` + shots(o.hist, 'Исторических фото пока не найдено. Проверьте PastVu по ссылке ниже.');
+    if (o.lat != null) h += ISO.section(o.id, 'obj');
     h += linksBlock(o);
     if (o.sources) h += `<p class="note" style="margin-top:12px">Источники: ${esc(o.sources)}</p>`;
     return h;
@@ -411,6 +564,7 @@
       h += `<h3>Постройки (${objs.length})</h3><ul class="objlist">` + objs.sort((a, b) => a.name.localeCompare(b.name, 'ru')).map(o =>
         `<li><a href="#${o.id}"><span class="sym ${o.status} ${BRIDGE_KINDS.has(o.kind) ? 'bridge' : ''}"></span><span>${esc(o.name)}${o.address ? '<small>' + esc(o.address) + '</small>' : ''}</span></a></li>`).join('') + `</ul>`;
     }
+    h += ISO.section(s.id, 'zone');
     h += `<h3>В альбомах 1908–1909 гг.</h3>` + albumBlock(s.album, 'Листов нет.');
     if (s.note) h += `<p class="note">${esc(s.note)}</p>`;
     if (s.hist && s.hist.length) h += `<h3>Исторические фото</h3>` + shots(s.hist, '');
