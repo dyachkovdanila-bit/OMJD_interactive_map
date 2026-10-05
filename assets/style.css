@@ -183,3 +183,25 @@ a{color:var(--accent)}
 .iso-figs span{font-size:12px;line-height:1.3;color:var(--muted)}
 .iso-rail{font-size:13px;margin:0 0 8px}
 @media (max-width:420px){.iso-figs{grid-template-columns:repeat(2,minmax(0,1fr))}}
+/* МЦК и точки интереса */
+.mcc-mk{position:relative;width:0;height:0}
+.mcc-mk .ring{position:absolute;left:-7px;top:-7px;width:14px;height:14px;border-radius:50%;background:#fff;border:3px solid var(--ring);box-sizing:border-box;box-shadow:0 0 0 1px rgba(255,255,255,.8)}
+.mcc-mk .lbl{display:none;position:absolute;left:10px;top:-9px;white-space:nowrap;font:italic 700 11px/1.4 var(--sans);color:var(--ring);background:rgba(255,255,255,.82);padding:0 4px;border-radius:3px}
+.z-mcc .mcc-mk .lbl{display:block}
+.poi-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--c,#888);border:1px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.18);vertical-align:-1px;margin-right:4px;flex:none}
+.poi-dot.hollow{background:transparent;border:2px solid var(--c,#888);box-shadow:none}
+.iso-box .grp{font-size:12px;font-weight:700;margin:8px 0 2px;color:var(--muted)}
+.iso-box .n{margin-left:auto;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+.poi-popup .leaflet-popup-content{margin:10px 12px;font:13px/1.4 var(--sans)}
+.poi-pop .eyebrow{margin:0 0 2px;font-size:11px;color:var(--muted)}
+.poi-pop dl{display:grid;grid-template-columns:auto 1fr;gap:2px 8px;margin:6px 0;font-size:12px}
+.poi-pop dt{color:var(--muted)} .poi-pop dd{margin:0}
+.poi-pop p{margin:6px 0 0}
+.poi-list summary{cursor:pointer;font-size:13px;color:var(--accent);margin:6px 0}
+.poi-list ul{list-style:none;margin:0;padding:0;max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:8px}
+.poi-list li button{display:flex;gap:8px;align-items:flex-start;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);padding:7px 10px;font:13px/1.35 var(--sans);color:var(--ink);cursor:pointer}
+.poi-list li:last-child button{border-bottom:0}
+.poi-list li button:hover{background:rgba(127,127,127,.08)}
+.poi-list li button>span:nth-child(2){flex:1;min-width:0}
+.poi-list small{display:block;color:var(--muted);font-size:11px}
+.poi-list .t{color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}

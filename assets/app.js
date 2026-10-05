@@ -257,6 +257,164 @@
     };
   })();
 
+  // ---------- станции МЦК и точки интереса ----------
+  // МЦК — нынешние остановочные пункты кольца (OSM). Точки интереса — ОКН из списков Викигида
+  // и музеи, театры, храмы, парки и т. п. из OSM в пределах 15 минут пешком от построек МОЖД;
+  // данные (≈0,7 МБ) грузятся при включении слоя или при открытии карточки.
+  map.createPane('mcc'); map.getPane('mcc').style.zIndex = 625;
+  map.createPane('poi'); map.getPane('poi').style.zIndex = 600;
+  const AROUND = (() => {
+    const box = document.getElementById('around-box');
+    const MCC = window.MOZD_MCC || [];
+    const mccLayer = L.layerGroup();
+    MCC.forEach(s => {
+      const icon = L.divIcon({className: 'mcc-mk', iconSize: null, html: `<span class="ring"></span><span class="lbl">МЦК ${esc(s.n)}</span>`});
+      const m = L.marker([s.lat, s.lon], {icon, pane: 'mcc', keyboard: false});
+      const near = s.near && byId.get(s.near) ? byId.get(s.near) : (stById.get(s.near) || null);
+      m.bindTooltip(`<b>Станция МЦК «${esc(s.n)}»</b><br>` + (s.t != null && near ? `${fmtMin(s.t)} пешком до постройки МОЖД: ${esc(near.name)}` : 'построек МОЖД в 15 минутах нет'), {className: 'tt', direction: 'top', offset: [0, -8]});
+      if (near) m.on('click', () => route(s.near, true));
+      mccLayer.addLayer(m);
+    });
+    mccLayer.addTo(map);
+    const syncMcc = () => document.getElementById('map').classList.toggle('z-mcc', map.getZoom() >= 14);
+    map.on('zoomend', syncMcc); syncMcc();
+
+    let P = null, pP = null, on = false, layers = null;
+    const renderer = L.canvas({pane: 'poi', padding: 0.3});
+    const loadP = () => pP || (pP = new Promise((ok, bad) => { const s = document.createElement('script'); s.src = 'data/poi.js'; s.onload = () => { P = window.MOZD_POI; ok(P); }; s.onerror = bad; document.head.appendChild(s); }));
+    const catOn = {};
+    function popupHTML(it) {
+      const c = P.cats[it[0]], d = it[7] || {};
+      let h = `<div class="poi-pop"><p class="eyebrow"><span class="poi-dot" style="background:${c.c}"></span>${esc(c.l)}${d.k ? ' · ' + esc(d.k) : ''}</p><b>${esc(it[3])}</b>`;
+      const rows = [];
+      if (d.cx) rows.push(['В составе', d.cx]);
+      if (d.y) rows.push(['Время', d.y]);
+      if (d.a) rows.push(['Авторы', d.a]);
+      if (d.st) rows.push(['Стиль', d.st]);
+      if (d.ad) rows.push(['Адрес', d.ad]);
+      if (d.rg) rows.push(['Рег. № ЕГРОКН', d.rg]);
+      if (rows.length) h += `<dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>`;
+      const near = P.src[it[5]];
+      const no = byId.get(near) || stById.get(near);
+      if (no) h += `<p>${fmtMin(it[4] / 10)} пешком от «<a href="#${escAttr(near)}" data-route="${escAttr(near)}">${esc(no.name)}</a>»</p>`;
+      if (d.ap) h += `<p class="note">координаты приблизительные</p>`;
+      const L2 = [];
+      if (d.kn) L2.push(['Викигид', `https://ru.wikivoyage.org/w/index.php?search=${d.kn}`]);
+      if (d.wd) L2.push(['Wikidata', `https://www.wikidata.org/wiki/${d.wd}`]);
+      if (d.wp) L2.push(['Википедия', `https://${d.wp.split(':')[0]}.wikipedia.org/wiki/${encodeURIComponent(d.wp.split(':').slice(1).join(':'))}`]);
+      if (d.ws) L2.push(['Сайт', d.ws]);
+      if (L2.length) h += `<p class="poi-links">${L2.map(([t, u]) => `<a href="${escAttr(u)}" target="_blank" rel="noopener">${t}</a>`).join(' · ')}</p>`;
+      return h + `</div>`;
+    }
+    function build() {
+      layers = P.cats.map(() => L.layerGroup());
+      P.items.forEach((it, i) => {
+        const c = P.cats[it[0]], hollow = c.k === 'lost', small = c.k === 'grave' || c.k === 'plaque';
+        const m = L.circleMarker([it[1], it[2]], {renderer, radius: small ? 3 : 4.5, weight: hollow ? 2 : 1, color: hollow ? c.c : '#fff', fillColor: c.c, fillOpacity: hollow ? 0 : 0.95, opacity: 1});
+        m.bindTooltip(`${esc(it[3])}<br><small>${esc(c.l)}</small>`, {className: 'tt', direction: 'top', offset: [0, -4]});
+        m.bindPopup(() => popupHTML(it), {maxWidth: 300, className: 'poi-popup'});
+        it._m = m;
+        layers[it[0]].addLayer(m);
+      });
+      P.cats.forEach((c, i) => { if (catOn[c.k] == null) catOn[c.k] = !!c.on; });
+    }
+    function sync() {
+      if (!layers) return;
+      const vis = on && map.getZoom() >= 13;
+      P.cats.forEach((c, i) => { const v = vis && catOn[c.k]; if (v && !map.hasLayer(layers[i])) layers[i].addTo(map); else if (!v && map.hasLayer(layers[i])) map.removeLayer(layers[i]); });
+      hint.hidden = !on || map.getZoom() >= 13;
+    }
+    map.on('zoomend', sync);
+    map.on('popupopen', e => { const a = e.popup.getElement().querySelector('[data-route]'); if (a) a.addEventListener('click', ev => { ev.preventDefault(); map.closePopup(); route(a.dataset.route, true); }); });
+    box.innerHTML = `<label class="iso-main"><input type="checkbox" id="mcc-on" checked> Станции МЦК (сейчас)</label>
+      <label class="iso-main"><input type="checkbox" id="poi-on"> ОКН, музеи и другие точки интереса в 15 минутах</label>
+      <p class="meta" id="poi-status">ОКН — по спискам Викигида; музеи, театры, храмы, парки — OpenStreetMap</p>
+      <div id="poi-sub" hidden><p class="meta" id="poi-hint" hidden>точки видны при приближении</p><div id="poi-cats"></div></div>`;
+    const sub = box.querySelector('#poi-sub'), status = box.querySelector('#poi-status'), hint = box.querySelector('#poi-hint');
+    box.querySelector('#mcc-on').addEventListener('change', e => { if (e.target.checked) mccLayer.addTo(map); else map.removeLayer(mccLayer); });
+    async function setOn(v) {
+      on = v; sub.hidden = !v;
+      if (v) {
+        status.textContent = 'загрузка…';
+        try {
+          await loadP(); if (!layers) { build(); renderCats(); }
+          status.textContent = `${P.items.length.toLocaleString('ru-RU')} точек в 15 минутах от построек`;
+        } catch (e) { status.textContent = 'данные слоя не найдены'; }
+      }
+      sync();
+    }
+    function renderCats() {
+      const counts = {}; P.items.forEach(it => counts[it[0]] = (counts[it[0]] || 0) + 1);
+      let g = null, h = '';
+      P.cats.forEach((c, i) => {
+        if (c.g !== g) { h += `<div class="grp">${esc(c.g)}</div>`; g = c.g; }
+        h += `<label><input type="checkbox" data-cat="${c.k}" ${catOn[c.k] ? 'checked' : ''}> <span class="poi-dot${c.k === 'lost' ? ' hollow' : ''}" style="--c:${c.c}"></span> ${esc(c.l)} <span class="n">${counts[i] || 0}</span></label>`;
+      });
+      box.querySelector('#poi-cats').innerHTML = h;
+      box.querySelectorAll('[data-cat]').forEach(cb => cb.addEventListener('change', () => { catOn[cb.dataset.cat] = cb.checked; sync(); }));
+    }
+    box.querySelector('#poi-on').addEventListener('change', e => setOn(e.target.checked));
+    function turnOn() { const cb = box.querySelector('#poi-on'); if (!cb.checked) { cb.checked = true; return setOn(true); } return Promise.resolve(); }
+    function show(it) {
+      turnOn().then(() => {
+        const ci = it[0], c = P.cats[ci];
+        if (!catOn[c.k]) { catOn[c.k] = true; const cb = box.querySelector(`[data-cat="${c.k}"]`); if (cb) cb.checked = true; }
+        map.flyTo(offsetForCard([it[1], it[2]], 17), 17, {duration: .6});
+        map.once('moveend', () => { sync(); it._m.openPopup(); });
+      });
+    }
+
+    // карточка: что ещё есть рядом
+    function fillCard(el) {
+      const sec = el.querySelector('[data-poi]'); if (!sec) return;
+      const id = sec.dataset.poi, kind = sec.dataset.poiKind;
+      // МЦК — сразу, без загрузки
+      const mccNear = MCC.map(s => {
+        let t = null;
+        if (kind === 'zone') Object.entries(s.per).forEach(([o, v]) => { if (zoneOf(o) === id && (t == null || v < t)) t = v; });
+        else if (s.per[id] != null) t = s.per[id];
+        return t == null ? null : [s, t];
+      }).filter(Boolean).sort((a, b) => a[1] - b[1]);
+      let mh = mccNear.length ? `<p class="iso-rail"><b>МЦК в 15 минутах:</b> ${mccNear.map(([s, t]) => `${esc(s.n)} — ${fmtMin(t)}`).join(', ')}</p>` : `<p class="iso-rail"><b>МЦК:</b> станций в 15 минутах нет</p>`;
+      sec.innerHTML = `<h3>${kind === 'zone' ? 'Вокруг участка: 15 минут пешком' : 'Вокруг: 15 минут пешком'}</h3>` + mh + `<p class="note">загрузка точек интереса…</p>`;
+      loadP().then(() => {
+        const objIdx = new Set(kind === 'zone' ? P.src.map((o, i) => P.zone[i] === id ? i : -1).filter(i => i >= 0) : [P.src.indexOf(id)]);
+        const hits = [];
+        P.items.forEach(it => { const per = it[6]; let t = null; for (let k = 0; k < per.length; k += 2) if (objIdx.has(per[k]) && (t == null || per[k + 1] < t)) t = per[k + 1]; if (t != null) hits.push([it, t / 10]); });
+        hits.sort((a, b) => a[1] - b[1]);
+        const byCat = {}; hits.forEach(([it]) => byCat[it[0]] = (byCat[it[0]] || 0) + 1);
+        let h = `<h3>${kind === 'zone' ? 'Вокруг участка: 15 минут пешком' : 'Вокруг: 15 минут пешком'}</h3>` + mh;
+        if (!hits.length) { sec.innerHTML = h + `<p class="empty">Других ОКН и точек интереса в 15 минутах не найдено.</p>`; return; }
+        h += `<div class="chips">` + P.cats.map((c, i) => byCat[i] ? `<span class="chip"><span class="poi-dot${c.k === 'lost' ? ' hollow' : ''}" style="--c:${c.c}"></span>${esc(c.l)}: ${byCat[i]}</span>` : '').join('') + `</div>`;
+        // списки по группам, внутри — по удалённости
+        const GROUPS = [['Объекты культурного наследия', ['okn_f', 'okn_r', 'okn_m', 'okn_v', 'okn_x']], ['Музеи, театры, библиотеки', ['museum', 'culture']],
+          ['Храмы', ['worship']], ['Достопримечательности, парки', ['sight', 'park']], ['Памятники, городское искусство', ['memorial', 'art']],
+          ['Утраченные ОКН', ['lost']], ['Ценные градоформирующие объекты', ['cgfo']]];
+        const LIM = 30, shown = [];
+        GROUPS.forEach(([title, keys], gi) => {
+          const list = hits.filter(([it]) => keys.includes(P.cats[it[0]].k)); if (!list.length) return;
+          h += `<details class="poi-list"${gi === 0 ? ' open' : ''}><summary>${title} (${list.length}${list.length > LIM ? ', ближайшие ' + LIM : ''})</summary><ul>` +
+            list.slice(0, LIM).map(([it, t]) => { const j = shown.push(it) - 1; const c = P.cats[it[0]]; return `<li><button type="button" data-poi-i="${j}"><span class="poi-dot${c.k === 'lost' ? ' hollow' : ''}" style="--c:${c.c}"></span><span>${esc(it[3])}<small>${esc(c.l)}${it[7] && it[7].y ? ' · ' + esc(it[7].y) : ''}</small></span><span class="t">${fmtMin(t)}</span></button></li>`; }).join('') + `</ul></details>`;
+        });
+        const main = shown;
+        h += `<p class="note">ОКН — по спискам объектов культурного наследия Викигида (${'включая выявленные'}); остальное — OpenStreetMap. Время — пешком по сети путей, 5 км/ч.</p>`;
+        sec.innerHTML = h;
+        sec.querySelectorAll('[data-poi-i]').forEach(b => b.addEventListener('click', () => show(main[+b.dataset.poiI])));
+      }).catch(() => { sec.querySelector('.note').textContent = 'данные о точках интереса не найдены'; });
+    }
+    function zoneOf(o) { const P_ = window.MOZD_POI; if (P_) { const i = P_.src.indexOf(o); return i >= 0 ? P_.zone[i] : null; } const ob = byId.get(o); return null; }
+    return {
+      section: (id, kind) => `<section class="poi-sec" data-poi="${escAttr(id)}" data-poi-kind="${kind}"></section>`,
+      fillCard: el => {
+        // для карточки станции нужен список построек участка — он есть в poi.js; МЦК покажем после загрузки
+        const sec = el.querySelector('[data-poi]'); if (!sec) return;
+        if (sec.dataset.poiKind === 'zone' && !window.MOZD_POI) { sec.innerHTML = '<p class="note">загрузка…</p>'; loadP().then(() => fillCard(el)).catch(() => sec.remove()); return; }
+        fillCard(el);
+      }
+    };
+  })();
+  function fmtMin(t) { const m = Math.max(1, Math.round(t)); return `${m} мин`; }
+
   // ---------- ring line ----------
   map.createPane('ring'); map.getPane('ring').style.zIndex = 420;
   if (RING.length) L.polyline(RING, {pane: 'ring', color: getCss('--ring'), weight: 2, opacity: .65, interactive: false}).addTo(map);
@@ -436,7 +594,7 @@
     body.querySelectorAll('[data-full]').forEach(btn => btn.addEventListener('click', () => openLb(btn.dataset.full, btn.dataset.cap, btn.querySelector('img'))));
     body.querySelectorAll('a[href^="#"]').forEach(a => a.addEventListener('click', e => { e.preventDefault(); route(a.getAttribute('href').slice(1), true); }));
     body.querySelectorAll('img.prog').forEach(img => progIO.observe(img));
-    ISO.fillCard(body);
+    ISO.fillCard(body); AROUND.fillCard(body);
     card.hidden = false; card.scrollTop = 0; tourBtn.hidden = true;
     if (window.innerWidth > 760) panel.style.visibility = 'hidden';
     updateNav();
@@ -545,7 +703,7 @@
       h += shots(o.photos, 'Современных фото пока нет — добавьте свои снимки с выезда.');
     }
     h += `<h3>Исторические фото</h3>` + shots(o.hist, 'Исторических фото пока не найдено. Проверьте PastVu по ссылке ниже.');
-    if (o.lat != null) h += ISO.section(o.id, 'obj');
+    if (o.lat != null) h += ISO.section(o.id, 'obj') + AROUND.section(o.id, 'obj');
     h += linksBlock(o);
     if (o.sources) h += `<p class="note" style="margin-top:12px">Источники: ${esc(o.sources)}</p>`;
     return h;
@@ -564,7 +722,7 @@
       h += `<h3>Постройки (${objs.length})</h3><ul class="objlist">` + objs.sort((a, b) => a.name.localeCompare(b.name, 'ru')).map(o =>
         `<li><a href="#${o.id}"><span class="sym ${o.status} ${BRIDGE_KINDS.has(o.kind) ? 'bridge' : ''}"></span><span>${esc(o.name)}${o.address ? '<small>' + esc(o.address) + '</small>' : ''}</span></a></li>`).join('') + `</ul>`;
     }
-    h += ISO.section(s.id, 'zone');
+    h += ISO.section(s.id, 'zone') + AROUND.section(s.id, 'zone');
     h += `<h3>В альбомах 1908–1909 гг.</h3>` + albumBlock(s.album, 'Листов нет.');
     if (s.note) h += `<p class="note">${esc(s.note)}</p>`;
     if (s.hist && s.hist.length) h += `<h3>Исторические фото</h3>` + shots(s.hist, '');
