@@ -413,6 +413,30 @@
       }
     };
   })();
+  // ---------- режим территории: что действует сейчас и что можно согласовать ----------
+  const REG = (() => {
+    let pR = null;
+    const load = () => pR || (pR = new Promise((ok, bad) => { const s = document.createElement('script'); s.src = 'data/regimes.js'; s.onload = () => ok(window.MOZD_REG); s.onerror = () => { pR = null; bad(new Error('regimes.js')); }; document.head.appendChild(s); }));
+    const VCL = {yes: 'v-yes', cond: 'v-cond', no: 'v-no', check: 'v-check', free: 'v-free', idea: 'v-idea'};
+    function render(sec, R) {
+      const it = R.items[sec.dataset.reg]; if (!it) { sec.remove(); return; }
+      const T = R.T, [now, can, q] = it, st = sec.dataset.regKind === 'st';
+      let h = `<h3>Режим территории</h3>`;
+      h += `<dl class="reg-now">` + now.map(([k, v]) => `<dt>${esc(T[k])}</dt><dd>${esc(T[v])}</dd>`).join('') + `</dl>`;
+      h += `<p class="reg-h">${st ? 'Что можно согласовать на станции' : 'Что можно согласовать'} <span>оценка</span></p>`;
+      h += `<ul class="reg-can">` + can.map(([l, v, t, b]) => `<li><span class="reg-v ${VCL[v] || ''}">${esc(R.verdict[v] || v)}</span><div><b>${esc(T[l])}</b><p>${esc(T[t])}</p>${T[b] ? `<small>${esc(T[b])}</small>` : ''}</div></li>`).join('') + `</ul>`;
+      h += `<p class="reg-links"><a href="https://nspd.gov.ru/map?${escAttr(q)}" target="_blank" rel="noopener">Участок и зона ПЗЗ — НСПД</a><a href="https://data.mos.ru/opendata/613" target="_blank" rel="noopener">Зоны охраны ОКН — data.mos.ru</a></p>`;
+      h += `<details class="reg-src"><summary>Источники и оговорки</summary><p>${esc(R.src.note)}</p><p>${esc(R.src.data)}</p><p>${esc(R.src.law)}</p></details>`;
+      sec.innerHTML = h;
+    }
+    return {
+      section: (id, kind) => `<section class="reg-sec" data-reg="${escAttr(id)}" data-reg-kind="${kind || 'obj'}"><h3>Режим территории</h3><p class="note">загрузка…</p></section>`,
+      fillCard: el => {
+        const sec = el.querySelector('[data-reg]'); if (!sec) return;
+        load().then(R => render(sec, R)).catch(() => { sec.querySelector('.note').textContent = 'данные о режимах не найдены'; });
+      }
+    };
+  })();
   function fmtMin(t) { const m = Math.max(1, Math.round(t)); return `${m} мин`; }
 
   // ---------- ring line ----------
@@ -594,7 +618,7 @@
     body.querySelectorAll('[data-full]').forEach(btn => btn.addEventListener('click', () => openLb(btn.dataset.full, btn.dataset.cap, btn.querySelector('img'))));
     body.querySelectorAll('a[href^="#"]').forEach(a => a.addEventListener('click', e => { e.preventDefault(); route(a.getAttribute('href').slice(1), true); }));
     body.querySelectorAll('img.prog').forEach(img => progIO.observe(img));
-    ISO.fillCard(body); AROUND.fillCard(body);
+    REG.fillCard(body); ISO.fillCard(body); AROUND.fillCard(body);
     card.hidden = false; card.scrollTop = 0; tourBtn.hidden = true;
     if (window.innerWidth > 760) panel.style.visibility = 'hidden';
     updateNav();
@@ -703,7 +727,7 @@
       h += shots(o.photos, 'Современных фото пока нет — добавьте свои снимки с выезда.');
     }
     h += `<h3>Исторические фото</h3>` + shots(o.hist, 'Исторических фото пока не найдено. Проверьте PastVu по ссылке ниже.');
-    if (o.lat != null) h += ISO.section(o.id, 'obj') + AROUND.section(o.id, 'obj');
+    if (o.lat != null) h += REG.section(o.id, 'obj') + ISO.section(o.id, 'obj') + AROUND.section(o.id, 'obj');
     h += linksBlock(o);
     if (o.sources) h += `<p class="note" style="margin-top:12px">Источники: ${esc(o.sources)}</p>`;
     return h;
@@ -722,7 +746,7 @@
       h += `<h3>Постройки (${objs.length})</h3><ul class="objlist">` + objs.sort((a, b) => a.name.localeCompare(b.name, 'ru')).map(o =>
         `<li><a href="#${o.id}"><span class="sym ${o.status} ${BRIDGE_KINDS.has(o.kind) ? 'bridge' : ''}"></span><span>${esc(o.name)}${o.address ? '<small>' + esc(o.address) + '</small>' : ''}</span></a></li>`).join('') + `</ul>`;
     }
-    h += ISO.section(s.id, 'zone') + AROUND.section(s.id, 'zone');
+    h += REG.section(s.id, 'st') + ISO.section(s.id, 'zone') + AROUND.section(s.id, 'zone');
     h += `<h3>В альбомах 1908–1909 гг.</h3>` + albumBlock(s.album, 'Листов нет.');
     if (s.note) h += `<p class="note">${esc(s.note)}</p>`;
     if (s.hist && s.hist.length) h += `<h3>Исторические фото</h3>` + shots(s.hist, '');
